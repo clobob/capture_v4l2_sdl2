@@ -8,6 +8,7 @@
 #include <sys/ioctl.h>
 #include <linux/videodev2.h>
 #include <linux/v4l2-controls.h>
+#include <getopt.h>
 
 #include <sys/epoll.h>
 #include <time.h>
@@ -36,7 +37,9 @@ VIDIOC_STREAMOFF 应用程序将该帧缓冲区重新挂入输入队列
 #define CAPTURE_WIDTH		(640)
 #define CAPTURE_HEIGHT		(480)
 
-#define DRM_DEV	"/dev/dri/card0"
+#define DRM_DEFAULT_DEV		"/dev/dri/card0"
+#define DU_NUM  		  (4)
+#define FRAME_BUFFER_NUM  (2)
 
 typedef unsigned char  uInt8;
 typedef unsigned short uInt16;
@@ -78,11 +81,6 @@ typedef struct
 	uInt32 width;
 	uInt32 height;
 }stRect;
-
-
-#define DU_NUM  		  (4)
-#define FRAME_BUFFER_NUM  (2)
-#define CUR_DU_IDX 		  (1)
 
 typedef struct
 {
@@ -192,6 +190,11 @@ void _LogOut_(int Level, const char Format[], ...)
 
 static stUserBuff capture_usr_buffs[CAPTURE_BUFF_NUM];
 static Int32      capture_dev_fd = -1;
+static uInt8 	  capture_tmp_buff[CAPTURE_WIDTH * CAPTURE_HEIGHT * 4];
+
+static Int32 	  drm_current_du = 0;
+static Int32 	  drm_current_fmt = DRM_FORMAT_XRGB8888;
+static char*	  drm_current_card = DRM_DEFAULT_DEV;
 
 //yuyv转rgb32的算法实现  
 /*
@@ -200,7 +203,7 @@ R = 1.164*(Y-16) + 1.159*(V-128);
 G = 1.164*(Y-16) - 0.380*(U-128)+ 0.813*(V-128); 
 B = 1.164*(Y-16) + 2.018*(U-128)); 
 */
-int yuvtorgb(int y, int u, int v, int calc)
+Int32 yuvtorgb(uInt8 y, uInt8 u, uInt8 v, uInt8 calc)
 {
      unsigned int pixel32 = 0;
      unsigned char *pixel = (unsigned char *)&pixel32;
@@ -231,12 +234,12 @@ int yuvtorgb(int y, int u, int v, int calc)
      return pixel32;
 }
 
-int yuyv2rgb32(unsigned char *yuv, unsigned char *rgb, unsigned int width, unsigned int height)
+Int32 yuyv2rgb32(uInt8 *yuv, uInt8 *rgb, uInt32 width, uInt32 height)
 {
-     unsigned int in, out;
-     int y0, u, y1, v;
-     unsigned int pixel32;
-     unsigned char *pixel = (unsigned char *)&pixel32;
+     uInt32 in, out;
+     uInt8 y0, u, y1, v;
+     uInt32 pixel32;
+     uInt8 *pixel = (unsigned char *)&pixel32;
      //分辨率描述像素点个数，而yuv2个像素点占有4个字符，所以这里计算总的字符个数，需要乘2
      unsigned int size = width*height*2; 
 
@@ -247,27 +250,27 @@ int yuyv2rgb32(unsigned char *yuv, unsigned char *rgb, unsigned int width, unsig
           v  = yuv[in+3];
 
           pixel32 = yuvtorgb(y0, u, v, 1);
-          rgb[out+0] = pixel[0];   
-          rgb[out+1] = pixel[1];
-          rgb[out+2] = pixel[2];
+          rgb[out+0] = pixel[2]; // b  
+          rgb[out+1] = pixel[1]; // g
+          rgb[out+2] = pixel[0]; // r
           rgb[out+3] = 0;  //32位rgb多了一个保留位
 
           pixel32 = yuvtorgb(y1, u, v, 0);
-          rgb[out+4] = pixel[0];
+          rgb[out+4] = pixel[2];
           rgb[out+5] = pixel[1];
-          rgb[out+6] = pixel[2];
+          rgb[out+6] = pixel[0];
           rgb[out+7] = 0;
 
      }
      return 0;
 }
 
-int capture_open_dev(const char* dev)
+Int32 capture_open_dev(const char* dev)
 {
 	return open(dev, O_RDWR);
 }
 
-int capture_query_cap(int fd)
+Int32 capture_query_cap(Int32 fd)
 {
 	struct v4l2_capability cap;
 	ioctl(fd, VIDIOC_QUERYCAP, &cap);
@@ -290,7 +293,7 @@ int capture_query_cap(int fd)
 	return 0;
 }
 
-void capture_show_fmts(int fd)
+void capture_show_fmts(Int32 fd)
 {
 	struct v4l2_fmtdesc fmtdesc;
 	fmtdesc.index = 0;
@@ -302,11 +305,11 @@ void capture_show_fmts(int fd)
 	}
 }
 
-void capture_current_fmt(int fd)
+void capture_current_fmt(Int32 fd)
 {
 	struct v4l2_format fmt;	
 	fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	int ret = ioctl(fd, VIDIOC_G_FMT, &fmt);
+	Int32 ret = ioctl(fd, VIDIOC_G_FMT, &fmt);
 	if (ret < 0)
 		printf( "capture: G_FMT after set format failed: %s\n", strerror(errno));
 
@@ -315,7 +318,7 @@ void capture_current_fmt(int fd)
 			(char*)&fmt.fmt.pix.pixelformat);
 }
 
-void capture_check_fmt(int fd, int pixel_fmt)
+void capture_check_fmt(Int32 fd, Int32 pixel_fmt)
 {
 	struct v4l2_format fmt;
 	fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -325,7 +328,7 @@ void capture_check_fmt(int fd, int pixel_fmt)
 	}
 }
 
-enStdType capture_get_standard(int fd)
+enStdType capture_get_standard(Int32 fd)
 {
 	v4l2_std_id std;
 	enStdType std_type = EN_STD_INVALID;
@@ -351,9 +354,9 @@ enStdType capture_get_standard(int fd)
 	return std_type;
 }
 
-int capture_set_format(int fd, int width, int height, int pixel_fmt)
+Int32 capture_set_format(Int32 fd, Int32 width, Int32 height, Int32 pixel_fmt)
 {
-	int ret;
+	Int32 ret;
 	struct v4l2_format fmt;
 
 	memset(&fmt, 0, sizeof fmt);
@@ -371,7 +374,7 @@ int capture_set_format(int fd, int width, int height, int pixel_fmt)
 	return 0;
 }
 
-int capture_set_crop(int fd, enStdType std)
+Int32 capture_set_crop(Int32 fd, enStdType std)
 {
 	struct v4l2_crop crop;
 	crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -404,7 +407,7 @@ int capture_set_crop(int fd, enStdType std)
 	return 0;
 }
 
-int capture_request_buffers(int fd, int mem_num)
+Int32 capture_request_buffers(Int32 fd, Int32 mem_num)
 {
 	struct v4l2_requestbuffers req;
 	req.count = mem_num;
@@ -419,9 +422,9 @@ int capture_request_buffers(int fd, int mem_num)
 	return 0;
 }
 
-int capture_query_buffers(int fd, int mem_num, stUserBuff *pUserBuff)
+Int32 capture_query_buffers(Int32 fd, Int32 mem_num, stUserBuff *pUserBuff)
 {
-	int i = 0;
+	Int32 i = 0;
 	struct v4l2_buffer buf;
 	buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	buf.memory = V4L2_MEMORY_MMAP;
@@ -444,7 +447,7 @@ int capture_query_buffers(int fd, int mem_num, stUserBuff *pUserBuff)
 	return 0;
 }
 
-int capture_control(int fd, enCtrlType ctrl)
+Int32 capture_control(Int32 fd, enCtrlType ctrl)
 {
 	enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	if(ctrl == EN_CTRL_START) {
@@ -462,9 +465,9 @@ int capture_control(int fd, enCtrlType ctrl)
 	return 0;
 }
 
-int capture_dump_data(int fd, int cnt)
+Int32 capture_dump_data(Int32 fd, Int32 cnt)
 {
-	int ret = -1;
+	Int32 ret = -1;
 	struct v4l2_buffer dequeue_buf, queue_buf;
 	dequeue_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	dequeue_buf.memory = V4L2_MEMORY_MMAP;
@@ -493,9 +496,9 @@ int capture_dump_data(int fd, int cnt)
 	return 0;
 }
 
-int capture_get_buff(int fd)
+Int32 capture_get_buff(Int32 fd)
 {
-	int ret = -1;
+	Int32 ret = -1;
 	struct v4l2_buffer dequeue_buf;
 	dequeue_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	dequeue_buf.memory = V4L2_MEMORY_MMAP;
@@ -508,9 +511,9 @@ int capture_get_buff(int fd)
 	return dequeue_buf.index;
 }
 
-int capture_put_buff(int fd, int buff_idx)
+Int32 capture_put_buff(Int32 fd, Int32 buff_idx)
 {
-	int ret = -1;
+	Int32 ret = -1;
 	struct v4l2_buffer queue_buf;
 	queue_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	queue_buf.memory = V4L2_MEMORY_MMAP;
@@ -559,6 +562,29 @@ Int32 calcProcessTime(Int32 *pStartMs)
 	return endTime.tv_sec * 1000 + endTime.tv_nsec / 1000000;
 }
 
+/* Show frames per second */
+static void showFps(void)
+{
+    static Int32 framecount = 0;
+    static Int32 lastframecount = 0;
+    static Int32 lastfpstime = 0;
+    static float fps = 0;
+
+	struct timespec endTime;
+	clock_gettime(CLOCK_REALTIME, &endTime);
+
+    framecount++;
+    if (!(framecount & 0x7)) {
+        Int32 now = endTime.tv_sec * 1000000000 + endTime.tv_nsec;
+        Int32 diff = now - lastfpstime;
+        fps = ((framecount - lastframecount) * (float)(1000000000)) / diff;
+        lastfpstime = now;
+        lastframecount = framecount;
+        DRM_LOG_WARNING("%d Frames, %f FPS", framecount, fps);
+    }
+	return;
+}
+
 static void drmInfoClear(stDrmInfo *pDrmInfo)
 {
 	//CHECK_POINTER_VALID(pDrmInfo, 0);
@@ -569,7 +595,7 @@ static void drmInfoClear(stDrmInfo *pDrmInfo)
 		pDrmInfo->dispUnits[i].width = 0;
 		pDrmInfo->dispUnits[i].height = 0;
 		pDrmInfo->dispUnits[i].crtcId = -1;
-		pDrmInfo->dispUnits[i].fourcc = DRM_FORMAT_YUYV;
+		pDrmInfo->dispUnits[i].fourcc = drm_current_fmt;
 		pDrmInfo->dispUnits[i].curFbIdx = 0;
 		pDrmInfo->dispUnits[i].duValid = FALSE;
 		pDrmInfo->dispUnits[i].pDrmConnector = NULL;
@@ -928,7 +954,9 @@ static Int32 drmSetCrtc(Int32 drmFd, stDisplayUnit *pDispUnit)
 					  1,
 					  pDispUnit->pDrmMode
 					  );
-	if(ret < 0){
+	printf("SetCtrc； drmfd = %d, crtc = %d, fb = %d, connId= %d\n",
+			drmFd, pDispUnit->crtcId, pDispUnit->frameBuffers[0].fbId, pDispUnit->pDrmConnector->connector_id);
+	if(ret){
 		DRM_LOG_ERR("Cannot set crtc for connector: %d, crtcID = %d, ret = %d!", pDispUnit->pDrmConnector->connector_id, pDispUnit->crtcId, ret);
 		return -1;
 	}
@@ -944,7 +972,11 @@ static void drawCaptureToDu(Int32 drmFd, stDisplayUnit *pDu)
 	
 	Int32 buff_idx = capture_get_buff(capture_dev_fd);
 	if(buff_idx >= 0) {
-		fillDataToRect(pfb->pMapAddr, pDu->width, capture_usr_buffs[buff_idx].pBuffer, &rect, bitPixel);
+		if(drm_current_fmt == DRM_FORMAT_XRGB8888) {
+			yuyv2rgb32(capture_usr_buffs[buff_idx].pBuffer, capture_tmp_buff, CAPTURE_WIDTH, CAPTURE_HEIGHT);
+		}
+		
+		fillDataToRect(pfb->pMapAddr, pDu->width, capture_tmp_buff, &rect, bitPixel);
 		capture_put_buff(capture_dev_fd, buff_idx);
 	}
 	else {
@@ -958,7 +990,8 @@ static void drawCaptureToDu(Int32 drmFd, stDisplayUnit *pDu)
 	else{
 		pDu->curFbIdx ^= 1;
 	}
-	DRM_LOG_NOTIFY("Flip crtc id = %d, curFbIdx = %d", pDu->crtcId, pDu->curFbIdx);
+	//DRM_LOG_NOTIFY("Flip crtc id = %d, curFbIdx = %d", pDu->crtcId, pDu->curFbIdx);
+	showFps();
 	return;
 }
 
@@ -974,7 +1007,7 @@ static void pageFlipEvent(
 	return;
 }
 
-Int32 drm_init(stDrmInfo *pDrmInfo)
+Int32 drm_init(stDrmInfo *pDrmInfo, const char* dev)
 {
 	CHECK_POINTER_VALID(pDrmInfo, -1);
 	uInt32 i = 0, j = 0;
@@ -983,7 +1016,7 @@ Int32 drm_init(stDrmInfo *pDrmInfo)
 	if(pDrmInfo->init) return 0;
 	drmInfoClear(pDrmInfo);
 	/* open drm device */
-	pDrmInfo->drmFd = open(DRM_DEV, O_RDWR | O_CLOEXEC);
+	pDrmInfo->drmFd = open(dev, O_RDWR | O_CLOEXEC);
 	
 	if (pDrmInfo->drmFd < 0) {
     	DRM_LOG_ERR("Failed to open omapdrm device");
@@ -991,13 +1024,13 @@ Int32 drm_init(stDrmInfo *pDrmInfo)
 	}
 
 	if (drmGetCap(pDrmInfo->drmFd, DRM_CAP_DUMB_BUFFER, &hasDumb) < 0 ||!hasDumb) {
-		DRM_LOG_ERR("drm device '%s' does not support dumb buffers", DRM_DEV);
+		DRM_LOG_ERR("drm device '%s' does not support dumb buffers", dev);
 		drmClose(pDrmInfo->drmFd);
 		pDrmInfo->drmFd = -1;
 		return -1;
 	}
 
-	DRM_LOG_NOTIFY("Open Drm %s success; fd: %d", DRM_DEV, pDrmInfo->drmFd);
+	DRM_LOG_NOTIFY("Open Drm %s success; fd: %d", dev, pDrmInfo->drmFd);
 
 	/* get drm resources */
 	pDrmInfo->pDrmResources = drmModeGetResources(pDrmInfo->drmFd);
@@ -1065,6 +1098,7 @@ Int32 drm_init(stDrmInfo *pDrmInfo)
 
 		DRM_LOG_WARNING("DU: %d drmSetCrtc Success!!", i);
 		pDrmInfo->dispUnits[i].duValid = TRUE;
+		drm_current_du = i;
 		drmConn = NULL;
     }
 	pDrmInfo->init = TRUE;
@@ -1127,16 +1161,16 @@ void drm_loop_run(stDrmInfo *pDrmInfo)
 	ev.version = 2;
 	ev.page_flip_handler = pageFlipEvent;
 
-	drawCaptureToDu(pDrmInfo->drmFd ,&pDrmInfo->dispUnits[CUR_DU_IDX]); 
+	drawCaptureToDu(pDrmInfo->drmFd ,&pDrmInfo->dispUnits[drm_current_du]); 
 
 	while(1)
 	{
 		Int32 ms = 0;
-		ms = calcProcessTime(NULL);
+		//ms = calcProcessTime(NULL);
 		Int32 fireEvents = epoll_wait(epollId, events, 1, -1);
-		ms = calcProcessTime(&ms);
+		//ms = calcProcessTime(&ms);
 		if(fireEvents > 0){
-			DRM_LOG_WARNING("VSync %d: %d ms", cnt++, ms);
+			//DRM_LOG_WARNING("VSync %d: %d ms", cnt++, ms);
 			drmHandleEvent(pDrmInfo->drmFd, &ev);
 		}
 	}
@@ -1144,11 +1178,122 @@ void drm_loop_run(stDrmInfo *pDrmInfo)
 	return;
 }
 
+void drm_get_format(int idx)
+{
+	switch(idx) {
+		case 0:
+			drm_current_fmt = DRM_FORMAT_XRGB8888;
+			printf("drm current format is XRGB8888\n");
+			break;
+		case 1:
+			drm_current_fmt = DRM_FORMAT_YUYV;
+			printf("drm current format is YUYV\n");
+			break;
+		default:
+			drm_current_fmt = DRM_FORMAT_XRGB8888;
+			printf("drm current format is XRGB8888\n");
+			break;
+	}
+}
+
+static void showUsage()
+{
+	printf("Usage: ./test_main  [params]\n" );
+	printf("	(1) -c [--card] dri card (0 ~ 3).\n");
+	printf("	(2) -f [--format] surport format: \n");
+	printf("				[0] DRM_FORMAT_XRGB8888\n");
+	printf("				[1] DRM_FORMAT_YUYV\n");
+	printf("	(3) -h [--help] show the usage of this test.\n");
+	printf("	Example: ./capture_v4l2 -c 1 -f 0\n");
+	return;
+}
+
+static enBOOL parseArgs(Int32 argc, char* argv[])
+{
+	if(argc != 1 && argc != 2 &&
+		argc != 3 && argc != 5){
+		showUsage();
+		return FALSE;
+	}
+	
+	Int8* short_options = "c:f:h"; 
+    struct option long_options[] = {  
+       //{"reqarg", required_argument, NULL, 'r'},  
+       //{"noarg",  no_argument,       NULL, 'n'},  
+       //{"optarg", optional_argument, NULL, 'o'}, 
+       {"card", required_argument, NULL, 'c'+'l'},
+	   {"format", required_argument, NULL, 'f' + 'l'},
+	   {"help", no_argument, NULL, 'h' + 'l'},
+       {0, 0, 0, 0}};  
+
+    Int32 opt = 0;
+    while ( (opt = getopt_long(argc, argv, short_options, long_options, NULL)) != -1){
+        switch(opt){
+            case 'c':
+            case 'c'+'l':
+            {
+                if(optarg){
+                    char* card = optarg;
+                    int card_idx = atoi(card);
+					switch(card_idx) {
+						case 0:
+							drm_current_card = "/dev/dri/card0";
+							break;
+						case 1:
+							drm_current_card = "/dev/dri/card1";
+							break;
+						case 2:
+							drm_current_card = "/dev/dri/card2";
+							break;
+						case 3:
+							drm_current_card = "/dev/dri/card3";
+							break;
+						default:
+							drm_current_card = DRM_DEFAULT_DEV;
+							break;
+					}
+                    printf("drm crad idx = %d, card = %s\n", card_idx, drm_current_card);
+                }
+                else{
+                    printf("card optarg is null\n");
+                }
+                break;
+            }
+			case 'f':
+            case 'f'+'l':
+            {
+                if(optarg){
+                    char* format = optarg;
+                    int fmt_idx = atoi(format);
+                    drm_get_format(fmt_idx);
+                }
+                else{
+                    printf("format optarg is null\n");
+                }
+                break;
+            }
+			case 'h':
+            case 'h'+'l':
+			{
+				showUsage();
+				return FALSE;
+            }
+            default:
+                break;
+        }
+    }
+	return TRUE;
+}
+
 
 int main(int argc, char* argv[])
 {
+	if(!parseArgs(argc, argv)){
+		return -1;
+	}
+	
 	// (1) 打开视频设备
-	int fd = -1, i = 0;
+	Int32 fd = -1, i = 0;
 	fd = capture_open_dev(CAPTURE_VIDEO_DEV);
 	if(fd < 0) {
 		printf("open %s fail!\n", CAPTURE_VIDEO_DEV);
@@ -1198,14 +1343,14 @@ int main(int argc, char* argv[])
 
 	stDrmInfo drmInfo = {0};
 	Int32 ret = -1;
-	ret = drm_init(&drmInfo);
+	ret = drm_init(&drmInfo, drm_current_card);
 	if(ret < 0){
 		DRM_LOG_ERR("DRM Init Fail!!!");
 		goto FREE_MAP_BUFF;
 	}
 
 	// (7) 抓取数据
-	int cnt = 0;
+	Int32 cnt = 0;
 	while(cnt < 5) {
 		capture_dump_data(fd, cnt);
 		cnt++;
