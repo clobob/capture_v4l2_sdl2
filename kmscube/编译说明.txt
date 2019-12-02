@@ -1,0 +1,2 @@
+./configure --host=aarch64-linux-gnu CC=${J7_SDK}/ti-processor-sdk-linux-automotive-j7-evm-06_01_00_05/linux-devkit/sysroots/x86_64-arago-linux/usr/bin/aarch64-linux-gnu-gcc --with-sysroot=${J7_SDK}/ti-processor-sdk-linux-automotive-j7-evm-06_01_00_05/linux-devkit/sysroots/aarch64-linux/
+makeS

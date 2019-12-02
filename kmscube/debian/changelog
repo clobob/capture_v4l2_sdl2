@@ -1,0 +1,21 @@
+kmscube (0.0.1+20121024-5) precise; urgency=low
+
+  * Update control
+
+ -- Xavier Boudet <x-boudet@ti.com>  Wed, 07 Nov 2012 10:41:34 +0100
+
+kmscube (0.0.1+20121024-4) precise; urgency=low
+
+  * Add more entries to gitignore
+  * Depend on recent libgbm >= 9
+  * Allow any architecture
+  * Do not depend on omap specific libraries
+
+ -- Vincent Stehlé <v-stehle@ti.com>  Fri, 26 Oct 2012 14:34:59 +0200
+
+kmscube (0.0.1+20121024-3) precise; urgency=low
+
+  * Initial debianization
+
+ -- Nicolas Dechesne <n-dechesne@ti.com>  Wed, 24 Oct 2012 16:18:19 +0000
+
