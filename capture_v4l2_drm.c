@@ -201,6 +201,7 @@ static uInt8 	  capture_tmp_buff[CAPTURE_WIDTH * CAPTURE_HEIGHT * 4];
 static Int32 	  drm_current_du = 0;
 static Int32 	  drm_current_fmt = DRM_FORMAT_XRGB8888;
 static char*	  drm_current_card = DRM_DEFAULT_DEV;
+static Int32	  drm_overlay_plane_id = -1;
 
 //yuyv转rgb32的算法实现  
 /*
@@ -1003,7 +1004,7 @@ static void drawCaptureToDu(Int32 drmFd, stDisplayUnit *pDu)
 	#if SUPPORT_DRM_PLANE
 	stRect src_rect = {640, 300, CAPTURE_WIDTH, CAPTURE_HEIGHT};
 	stRect dst_rect = {100, 100, CAPTURE_WIDTH, CAPTURE_HEIGHT};
-	drmModeSetPlane(drmFd, 32, 
+	drmModeSetPlane(drmFd, drm_overlay_plane_id, 
 					pDu->crtcId,
 					pfb->fbId, 0,
 					dst_rect.x, dst_rect.y, dst_rect.width, dst_rect.height,
@@ -1190,6 +1191,8 @@ void drm_loop_run(stDrmInfo *pDrmInfo)
 	 * introduced the page_flip_handler, so we use that. */
 	ev.version = 2;
 	ev.page_flip_handler = pageFlipEvent;
+
+	drm_overlay_plane_id = pDrmInfo->planeIds[1];
 
 	drawCaptureToDu(pDrmInfo->drmFd, &pDrmInfo->dispUnits[drm_current_du]); 
 
