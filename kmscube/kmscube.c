@@ -376,6 +376,8 @@ static int init_drm(void)
 
 static int init_gbm(void)
 {
+	printf("gbm.dev = %p, gbm.surface = %p\n", gbm.dev, gbm.surface);
+	
 	gbm.dev = gbm_create_device(drm.fd);
 
 	gbm.surface = gbm_surface_create(gbm.dev,
@@ -387,6 +389,7 @@ static int init_gbm(void)
 		return -1;
 	}
 
+	printf("gbm.dev = %p, gbm.surface = %p\n", gbm.dev, gbm.surface);
 	return 0;
 }
 
@@ -544,6 +547,7 @@ static int init_gl(void)
 			"}                                  \n";
 
 	gl.display = eglGetDisplay(gbm.dev);
+	printf("gl.display = %p\n", gl.display);
 
 	if (!eglInitialize(gl.display, &major, &minor)) {
 		printf("failed to initialize\n");
@@ -917,11 +921,15 @@ int main(int argc, char *argv[])
 		return ret;
 	}
 
+	printf("init gbm success!\n");
+
 	ret = init_gl();
 	if (ret) {
 		printf("failed to initialize EGL\n");
 		return ret;
 	}
+
+	printf("init gl success!\n");
 
 	/* clear the color buffer */
 	glClearColor(0.5, 0.5, 0.5, 1.0);
@@ -930,6 +938,7 @@ int main(int argc, char *argv[])
 	bo = gbm_surface_lock_front_buffer(gbm.surface);
 	fb = drm_fb_get_from_bo(bo);
 
+	printf("clear color success!\n");
 	/* set mode: */
 	if (all_display) {
 		for (i=0; i<drm.ndisp; i++) {
@@ -949,6 +958,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	printf("prepare enter while loop!\n");
 	while (frame_count != 0) {
 		struct gbm_bo *next_bo;
 		int waiting_for_flip;
