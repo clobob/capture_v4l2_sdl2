@@ -40,6 +40,8 @@ VIDIOC_STREAMOFF 应用程序将该帧缓冲区重新挂入输入队列
 #define DRM_DEFAULT_DEV		"/dev/dri/card0"
 #define DU_NUM  		  (4)
 #define FRAME_BUFFER_NUM  (2)
+#define SUPPORT_DRM_PLANE (1)
+#define PLANE_NUM		  (4)
 
 typedef unsigned char  uInt8;
 typedef unsigned short uInt16;
@@ -113,6 +115,10 @@ typedef struct
 	drmModeResPtr pDrmResources;
 	stDisplayUnit dispUnits[DU_NUM];
 	void* usrData;
+	
+	#if SUPPORT_DRM_PLANE
+	Int32 planeIds[PLANE_NUM];
+	#endif
 }stDrmInfo;
 
 #define CHECK_POINTER_VALID(P, V) \
@@ -966,7 +972,7 @@ static Int32 drmSetCrtc(Int32 drmFd, stDisplayUnit *pDispUnit)
 static void drawCaptureToDu(Int32 drmFd, stDisplayUnit *pDu)
 {
 	Int32 ret = -1;
-	static stRect rect = {640, 300, CAPTURE_WIDTH, CAPTURE_HEIGHT};
+	stRect rect = {640, 300, CAPTURE_WIDTH, CAPTURE_HEIGHT};
 	stFrameBufferInfo *pfb = &pDu->frameBuffers[pDu->curFbIdx];
 	uInt32 bitPixel = pfb->stride / pfb->virtualWidth;
 	
@@ -992,6 +998,19 @@ static void drawCaptureToDu(Int32 drmFd, stDisplayUnit *pDu)
 	}
 	//DRM_LOG_NOTIFY("Flip crtc id = %d, curFbIdx = %d", pDu->crtcId, pDu->curFbIdx);
 	showFps();
+
+
+	#if SUPPORT_DRM_PLANE
+	stRect src_rect = {640, 300, CAPTURE_WIDTH, CAPTURE_HEIGHT};
+	stRect dst_rect = {100, 100, CAPTURE_WIDTH, CAPTURE_HEIGHT};
+	drmModeSetPlane(drmFd, 32, 
+					pDu->crtcId,
+					pfb->fbId, 0,
+					dst_rect.x, dst_rect.y, dst_rect.width, dst_rect.height,
+					src_rect.x << 16, src_rect.y << 16, src_rect.width << 16, src_rect.height << 16);
+	
+	#endif
+	
 	return;
 }
 
@@ -1038,6 +1057,17 @@ Int32 drm_init(stDrmInfo *pDrmInfo, const char* dev)
 		DRM_LOG_ERR("Failed to get drm resources: %s", strerror(errno));
 		goto FAIL;
 	}
+
+	#if SUPPORT_DRM_PLANE
+	drmModePlaneRes *plane_res;
+	drmSetClientCap(pDrmInfo->drmFd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
+	plane_res = drmModeGetPlaneResources(pDrmInfo->drmFd);
+	DRM_LOG_NOTIFY("plane_res->count_planes = %d", plane_res->count_planes);
+	for(i = 0; i < plane_res->count_planes; i++) {
+		pDrmInfo->planeIds[i] = plane_res->planes[i];
+		DRM_LOG_NOTIFY("[%d] plane id: %d", i, plane_res->planes[i]);
+	}
+	#endif
 
 	/* get connectors */
 	DRM_LOG_NOTIFY("pDrmInfo->pDrmResources->count_connectors = %d", pDrmInfo->pDrmResources->count_connectors);
@@ -1161,7 +1191,7 @@ void drm_loop_run(stDrmInfo *pDrmInfo)
 	ev.version = 2;
 	ev.page_flip_handler = pageFlipEvent;
 
-	drawCaptureToDu(pDrmInfo->drmFd ,&pDrmInfo->dispUnits[drm_current_du]); 
+	drawCaptureToDu(pDrmInfo->drmFd, &pDrmInfo->dispUnits[drm_current_du]); 
 
 	while(1)
 	{
