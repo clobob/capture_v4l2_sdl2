@@ -197,6 +197,7 @@ void _LogOut_(int Level, const char Format[], ...)
 static stUserBuff capture_usr_buffs[CAPTURE_BUFF_NUM];
 static Int32      capture_dev_fd = -1;
 static uInt8 	  capture_tmp_buff[CAPTURE_WIDTH * CAPTURE_HEIGHT * 4];
+static Int32 	  capture_video_dev = 1;
 
 static Int32 	  drm_current_du = 0;
 static Int32 	  drm_current_fmt = DRM_FORMAT_XRGB8888;
@@ -990,6 +991,17 @@ static void drawCaptureToDu(Int32 drmFd, stDisplayUnit *pDu)
 		return;
 	}
 
+	#if SUPPORT_DRM_PLANE
+	stRect src_rect = {640, 300, CAPTURE_WIDTH, CAPTURE_HEIGHT};
+	stRect dst_rect = {100, 100, CAPTURE_WIDTH + 200, CAPTURE_HEIGHT + 200};
+	drmModeSetPlane(drmFd, drm_overlay_plane_id, 
+					pDu->crtcId,
+					pfb->fbId, 0,
+					dst_rect.x, dst_rect.y, dst_rect.width, dst_rect.height,
+					src_rect.x << 16, src_rect.y << 16, src_rect.width << 16, src_rect.height << 16);
+	
+	#endif
+
 	ret = drmModePageFlip(drmFd, pDu->crtcId, pfb->fbId, DRM_MODE_PAGE_FLIP_EVENT, pDu);
 	if (ret) {
 		DRM_LOG_ERR("cannot flip CRTC for connector %u : %d", pDu->pDrmConnector->connector_id, errno);
@@ -999,18 +1011,6 @@ static void drawCaptureToDu(Int32 drmFd, stDisplayUnit *pDu)
 	}
 	//DRM_LOG_NOTIFY("Flip crtc id = %d, curFbIdx = %d", pDu->crtcId, pDu->curFbIdx);
 	showFps();
-
-
-	#if SUPPORT_DRM_PLANE
-	stRect src_rect = {640, 300, CAPTURE_WIDTH, CAPTURE_HEIGHT};
-	stRect dst_rect = {100, 100, CAPTURE_WIDTH, CAPTURE_HEIGHT};
-	drmModeSetPlane(drmFd, drm_overlay_plane_id, 
-					pDu->crtcId,
-					pfb->fbId, 0,
-					dst_rect.x, dst_rect.y, dst_rect.width, dst_rect.height,
-					src_rect.x << 16, src_rect.y << 16, src_rect.width << 16, src_rect.height << 16);
-	
-	#endif
 	
 	return;
 }
@@ -1136,14 +1136,13 @@ Int32 drm_init(stDrmInfo *pDrmInfo, const char* dev)
 	return 0;
 FAIL:
 
-	for (i = 0; i < pDrmInfo->pDrmResources->count_connectors; i++) {
-		if(pDrmInfo->dispUnits[i].pDrmConnector){
-			drmModeFreeConnector(pDrmInfo->dispUnits[i].pDrmConnector);
-			pDrmInfo->dispUnits[i].pDrmConnector = NULL;
-		}
-	}
-
 	if(pDrmInfo->pDrmResources){
+		for (i = 0; i < pDrmInfo->pDrmResources->count_connectors; i++) {
+			if(pDrmInfo->dispUnits[i].pDrmConnector){
+				drmModeFreeConnector(pDrmInfo->dispUnits[i].pDrmConnector);
+				pDrmInfo->dispUnits[i].pDrmConnector = NULL;
+			}
+		}
 		drmModeFreeResources(pDrmInfo->pDrmResources);
 		pDrmInfo->pDrmResources = NULL;
 	}
@@ -1236,7 +1235,8 @@ static void showUsage()
 	printf("	(2) -f [--format] surport format: \n");
 	printf("				[0] DRM_FORMAT_XRGB8888\n");
 	printf("				[1] DRM_FORMAT_YUYV\n");
-	printf("	(3) -h [--help] show the usage of this test.\n");
+	printf("	(3) -v [--video] /dev/videoX (0 ~ 100).\n");
+	printf("	(4) -h [--help] show the usage of this test.\n");
 	printf("	Example: ./capture_v4l2 -c 1 -f 0\n");
 	return;
 }
@@ -1244,18 +1244,19 @@ static void showUsage()
 static enBOOL parseArgs(Int32 argc, char* argv[])
 {
 	if(argc != 1 && argc != 2 &&
-		argc != 3 && argc != 5){
+		argc != 3 && argc != 5 && argc != 7){
 		showUsage();
 		return FALSE;
 	}
 	
-	Int8* short_options = "c:f:h"; 
+	Int8* short_options = "c:f:v:h"; 
     struct option long_options[] = {  
        //{"reqarg", required_argument, NULL, 'r'},  
        //{"noarg",  no_argument,       NULL, 'n'},  
        //{"optarg", optional_argument, NULL, 'o'}, 
        {"card", required_argument, NULL, 'c'+'l'},
 	   {"format", required_argument, NULL, 'f' + 'l'},
+	   {"video", required_argument, NULL, 'v' + 'l'},
 	   {"help", no_argument, NULL, 'h' + 'l'},
        {0, 0, 0, 0}};  
 
@@ -1305,6 +1306,18 @@ static enBOOL parseArgs(Int32 argc, char* argv[])
                 }
                 break;
             }
+			case 'v':
+            case 'v'+'l':
+            {
+                if(optarg){
+                    char* video = optarg;
+                    capture_video_dev = atoi(video);
+                }
+                else{
+                    printf("video dev optarg is null\n");
+                }
+                break;
+            }
 			case 'h':
             case 'h'+'l':
 			{
@@ -1324,12 +1337,15 @@ int main(int argc, char* argv[])
 	if(!parseArgs(argc, argv)){
 		return -1;
 	}
-	
+
+	char video_dev[64] = {'\0'};
+	sprintf(video_dev, "/dev/video%d", capture_video_dev);
+	printf("Open Video Dev: %s\n", video_dev);
 	// (1) 打开视频设备
 	Int32 fd = -1, i = 0;
-	fd = capture_open_dev(CAPTURE_VIDEO_DEV);
+	fd = capture_open_dev(video_dev);
 	if(fd < 0) {
-		printf("open %s fail!\n", CAPTURE_VIDEO_DEV);
+		printf("open %s fail!\n", video_dev);
 		return -1;
 	}
 
